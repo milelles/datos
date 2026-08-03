@@ -1,0 +1,142 @@
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0a0e1a;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #fff;
+  touch-action: none;
+  user-select: none;
+}
+
+#game {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#hud {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 14px 16px;
+  pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+#altitude {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+#alt-best {
+  display: block;
+  font-size: 13px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+#seed-badge {
+  font-size: 12px;
+  opacity: 0.7;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+#copy-seed {
+  pointer-events: auto;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+}
+
+#charge-bar-wrap {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  width: 160px;
+  height: 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+#charge-bar {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #6ee7ff, #ff5f7e);
+  transition: width 0.03s linear;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  background: rgba(6, 8, 16, 0.82);
+  padding: 24px;
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.overlay h1 {
+  margin: 0 0 6px;
+  font-size: 32px;
+}
+
+.overlay p {
+  margin: 2px 0;
+  max-width: 320px;
+  opacity: 0.85;
+  font-size: 15px;
+}
+
+.overlay p.small {
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+.overlay button {
+  margin-top: 14px;
+  padding: 12px 28px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: none;
+  background: linear-gradient(90deg, #6ee7ff, #7d7fff);
+  color: #0a0e1a;
+  cursor: pointer;
+}
+
+#new-seed-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #fff;
+  margin-top: 6px;
+}

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Subida Infinita — prototipo</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud">
+    <div id="altitude">
+      <span id="alt-current">0</span>m
+      <span id="alt-best">mejor: 0m</span>
+    </div>
+    <div id="seed-badge">
+      semilla <span id="seed-value">—</span>
+      <button id="copy-seed" title="Copiar link con esta semilla">copiar link</button>
+    </div>
+  </div>
+
+  <div id="charge-bar-wrap">
+    <div id="charge-bar"></div>
+  </div>
+
+  <div id="start-screen" class="overlay">
+    <h1>Subida Infinita</h1>
+    <p>Toca para saltar. Mantené presionado para cargar un salto más grande.</p>
+    <p>Tocá a la izquierda / derecha de tu personaje para saltar en esa dirección.</p>
+    <p class="small">Teclado: flechas para dirección, espacio para saltar/cargar.</p>
+    <button id="start-btn">Jugar</button>
+  </div>
+
+  <div id="game-over-screen" class="overlay hidden">
+    <h1>Caíste</h1>
+    <p id="final-altitude">Llegaste a 0m</p>
+    <p id="best-altitude-msg"></p>
+    <button id="retry-btn">Revancha (misma semilla)</button>
+    <button id="new-seed-btn">Nueva semilla</button>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
