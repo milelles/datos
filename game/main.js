@@ -13,7 +13,8 @@ const JUMP_VX_MAX = 720; // px/s horizontal, carga completa
 const CHARGE_MS_MAX = 550; // ms para llegar a carga completa
 
 const PLAYER_W = 34;
-const PLAYER_H = 46;
+const PLAYER_H = 50;
+const DIR_DEADZONE = 26; // px alrededor del personaje sin dirección definida
 
 const CAMERA_ANCHOR_FRAC = 0.6; // el jugador vive al 60% de la altura del canvas
 const CAMERA_SMOOTH = 6; // más alto = cámara más "pegada" al jugador
@@ -215,19 +216,39 @@ class Player {
 }
 
 // ---------------------------------------------------------------------
-// Input: tap/hold para saltar, dirección por lado tocado o flechas
+// Dirección relativa al personaje: tocar cerca de él salta recto, tocar
+// a un lado lo manda para ese lado — sin importar en qué parte de la
+// pantalla esté parado (antes se usaban tercios fijos de la pantalla,
+// lo que hacía que tocar "a la izquierda del personaje" saltara para la
+// derecha si el personaje ya estaba cerca del borde derecho).
+// ---------------------------------------------------------------------
+function resolveDirection(pointerX, keyDir, playerX) {
+  if (keyDir !== 0) return keyDir;
+  if (pointerX === null || pointerX === undefined) return 0;
+  const dx = pointerX - playerX;
+  if (dx > DIR_DEADZONE) return 1;
+  if (dx < -DIR_DEADZONE) return -1;
+  return 0;
+}
+
+// ---------------------------------------------------------------------
+// Input: tap/hold para saltar, dirección por lado tocado (relativo al
+// personaje, con "apuntado" continuo mientras se arrastra) o flechas
 // ---------------------------------------------------------------------
 class InputController {
   constructor() {
     this.charging = false;
     this.chargeStart = 0;
-    this.direction = 0; // -1, 0, 1
+    this.pointerX = null; // última posición del puntero mientras carga
     this.keyDir = 0;
-    this.jumpRequested = null; // {charge, direction} cuando se suelta
+    this.jumpRequested = null; // {charge, pointerX, keyDir} cuando se suelta
 
     canvas.addEventListener("pointerdown", (e) => this._down(e.clientX));
-    canvas.addEventListener("pointerup", () => this._up());
-    canvas.addEventListener("pointercancel", () => this._up());
+    canvas.addEventListener("pointermove", (e) => {
+      if (this.charging) this.pointerX = e.clientX;
+    });
+    canvas.addEventListener("pointerup", (e) => this._up(e.clientX));
+    canvas.addEventListener("pointercancel", () => this._up(null));
 
     window.addEventListener("keydown", (e) => {
       if (e.code === "ArrowLeft") this.keyDir = -1;
@@ -237,7 +258,7 @@ class InputController {
     window.addEventListener("keyup", (e) => {
       if (e.code === "ArrowLeft" && this.keyDir === -1) this.keyDir = 0;
       else if (e.code === "ArrowRight" && this.keyDir === 1) this.keyDir = 0;
-      else if (e.code === "Space") this._up();
+      else if (e.code === "Space") this._up(null);
     });
   }
 
@@ -245,29 +266,27 @@ class InputController {
     if (this.charging) return;
     this.charging = true;
     this.chargeStart = performance.now();
-    if (clientX === null) {
-      this.direction = this.keyDir;
-    } else {
-      const third = cw / 3;
-      if (clientX < third) this.direction = -1;
-      else if (clientX > third * 2) this.direction = 1;
-      else this.direction = 0;
-    }
+    this.pointerX = clientX; // null cuando el salto arranca por teclado
   }
 
-  _up() {
+  _up(clientX) {
     if (!this.charging) return;
     this.charging = false;
+    if (clientX !== null && clientX !== undefined) this.pointerX = clientX;
     const heldMs = performance.now() - this.chargeStart;
     const charge = Math.max(0, Math.min(1, heldMs / CHARGE_MS_MAX));
-    const dir = this.keyDir !== 0 ? this.keyDir : this.direction;
-    this.jumpRequested = { charge, direction: dir };
+    this.jumpRequested = { charge, pointerX: this.pointerX, keyDir: this.keyDir };
   }
 
   currentCharge() {
     if (!this.charging) return 0;
     const heldMs = performance.now() - this.chargeStart;
     return Math.max(0, Math.min(1, heldMs / CHARGE_MS_MAX));
+  }
+
+  // dirección de apuntado en vivo, para dibujar la flecha guía mientras se carga
+  liveDirection(playerX) {
+    return resolveDirection(this.pointerX, this.keyDir, playerX);
   }
 
   consumeJump() {
@@ -336,14 +355,15 @@ class Game {
     // -- salto --
     const jump = this.input.consumeJump();
     if (jump && p.grounded) {
+      const direction = resolveDirection(jump.pointerX, jump.keyDir, p.x);
       const vy = JUMP_VY_MIN + jump.charge * (JUMP_VY_MAX - JUMP_VY_MIN);
-      const vx = jump.direction * (JUMP_VX_MIN + jump.charge * (JUMP_VX_MAX - JUMP_VX_MIN));
+      const vx = direction * (JUMP_VX_MIN + jump.charge * (JUMP_VX_MAX - JUMP_VX_MIN));
       p.vy = -vy;
       p.vx = vx;
       p.grounded = false;
       p.groundedPlatform = null;
       p.squash = 1.35;
-      if (jump.direction !== 0) p.facing = jump.direction;
+      if (direction !== 0) p.facing = direction;
     }
 
     // -- física --
@@ -363,7 +383,14 @@ class Game {
       }
     }
 
-    p.squash += (1 - p.squash) * Math.min(1, dt * 10);
+    // squash-and-stretch: se agacha mientras carga (más cuanto más carga
+    // acumula), se estira al saltar/caer, y siempre relaja hacia 1
+    if (p.grounded && this.input.charging) {
+      const targetSquash = 1 - this.input.currentCharge() * 0.3;
+      p.squash += (targetSquash - p.squash) * Math.min(1, dt * 14);
+    } else {
+      p.squash += (1 - p.squash) * Math.min(1, dt * 10);
+    }
 
     // -- altitud --
     p.altitudeM = Math.max(p.altitudeM, -p.worldY / PPM);
@@ -471,6 +498,7 @@ class Game {
 
     // jugador
     this._drawPlayer(toScreenY(p.worldY));
+    this._drawAimArrow(toScreenY(p.worldY));
 
     // ola
     const waveSy = toScreenY(this.waveWorldY);
@@ -522,38 +550,120 @@ class Game {
 
   _drawPlayer(sy) {
     const p = this.player;
+    const inAir = !p.grounded;
+    const charging = p.grounded && this.input.charging;
+    const chargeT = charging ? this.input.currentCharge() : 0;
+
     ctx.save();
     ctx.translate(p.x, sy);
-    const sx = 1 / p.squash;
-    const syScale = p.squash;
-    ctx.scale(sx, syScale);
+    ctx.scale(1 / p.squash, p.squash);
 
-    // cuerpo
-    ctx.fillStyle = "#ffd166";
-    roundRect(ctx, -PLAYER_W / 2, -PLAYER_H / 2, PLAYER_W, PLAYER_H, 10);
+    // -- geometría del muñequito, pies apoyados en PLAYER_H/2 --
+    const feetY = PLAYER_H / 2;
+    const legW = 8, legH = 9;
+    const legY = feetY - legH;
+    const bodyW = 26, bodyH = 22;
+    const bodyBottomY = legY;
+    const bodyTopY = bodyBottomY - bodyH;
+    const headR = 11;
+    const headCenterY = bodyTopY - headR * 0.75;
+
+    const skin = "#ffb238";
+    const skinDark = "#e0932a";
+    const ink = "#2b2118";
+
+    // piernas: se separan un poco en el aire, se tensan al cargar
+    const legSpread = inAir ? 8.5 : charging ? 5 + chargeT * 1.5 : 6;
+    ctx.fillStyle = skinDark;
+    roundRect(ctx, -legSpread - legW / 2, legY, legW, legH, 4);
+    ctx.fill();
+    roundRect(ctx, legSpread - legW / 2, legY, legW, legH, 4);
     ctx.fill();
 
-    // cara con esfuerzo si está en el aire
-    const inAir = !p.grounded;
-    ctx.fillStyle = "#2b2b2b";
-    const eyeY = -PLAYER_H / 2 + 16;
-    const eyeDx = p.facing * 2;
-    ctx.beginPath();
-    ctx.ellipse(-7 + eyeDx, eyeY, inAir ? 2.6 : 3.2, inAir ? 3.6 : 3.2, 0, 0, Math.PI * 2);
-    ctx.ellipse(7 + eyeDx, eyeY, inAir ? 2.6 : 3.2, inAir ? 3.6 : 3.2, 0, 0, Math.PI * 2);
+    // brazos: relajados de pie, hacia atrás al cargar (envión), arriba en el aire
+    const armLen = 15, armW = 6.5;
+    const armOriginY = bodyTopY + 6;
+    let armAngle;
+    if (inAir) armAngle = -2.35;
+    else if (charging) armAngle = 0.55 + chargeT * 0.5;
+    else armAngle = 0.3;
+    drawLimb(-bodyW / 2, armOriginY, armLen, armW, -armAngle, skin);
+    drawLimb(bodyW / 2, armOriginY, armLen, armW, armAngle, skin);
+
+    // cuerpo con panza clara
+    ctx.fillStyle = skin;
+    roundRect(ctx, -bodyW / 2, bodyTopY, bodyW, bodyH, 10);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,241,214,0.55)";
+    roundRect(ctx, -bodyW / 2 + 5, bodyTopY + bodyH * 0.32, bodyW - 10, bodyH * 0.55, 7);
     ctx.fill();
 
-    ctx.strokeStyle = "#2b2b2b";
-    ctx.lineWidth = 2;
+    // cabeza
+    ctx.fillStyle = "#fff1d6";
     ctx.beginPath();
-    if (inAir) {
-      ctx.arc(0, eyeY + 12, 4, Math.PI * 0.15, Math.PI * 0.85);
-    } else {
-      ctx.moveTo(-5, eyeY + 12);
-      ctx.lineTo(5, eyeY + 12);
-    }
+    ctx.arc(0, headCenterY, headR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // mechón de pelo
+    ctx.fillStyle = skin;
+    ctx.beginPath();
+    ctx.moveTo(-2, headCenterY - headR + 3);
+    ctx.quadraticCurveTo(3, headCenterY - headR - 8, 8, headCenterY - headR - 1);
+    ctx.quadraticCurveTo(3, headCenterY - headR + 4, -2, headCenterY - headR + 3);
+    ctx.fill();
+
+    // mejillas
+    ctx.fillStyle = "rgba(255,120,100,0.5)";
+    ctx.beginPath();
+    ctx.ellipse(-headR * 0.65, headCenterY + 3, 2.6, 1.8, 0, 0, Math.PI * 2);
+    ctx.ellipse(headR * 0.65, headCenterY + 3, 2.6, 1.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ojos: se entrecierran al cargar (esfuerzo), se agrandan en el aire
+    const eyeDx = p.facing * 1.6;
+    const eyeY = headCenterY - 1;
+    const eyeRX = inAir ? 2.3 : 2.6;
+    const eyeRY = inAir ? 3.2 : charging ? 1.4 : 2.6;
+    ctx.fillStyle = ink;
+    ctx.beginPath();
+    ctx.ellipse(-5.5 + eyeDx, eyeY, eyeRX, eyeRY, 0, 0, Math.PI * 2);
+    ctx.ellipse(5.5 + eyeDx, eyeY, eyeRX, eyeRY, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // boca: esfuerzo tenso al cargar, "O" de impulso en el aire, sonrisa parada
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    if (inAir) ctx.arc(0, eyeY + 7, 3, Math.PI * 0.1, Math.PI * 0.9);
+    else if (charging) { ctx.moveTo(-3.5, eyeY + 7); ctx.lineTo(3.5, eyeY + 7); }
+    else ctx.arc(0, eyeY + 5, 2.6, Math.PI * 0.15, Math.PI * 0.85);
     ctx.stroke();
 
+    ctx.restore();
+  }
+
+  // flecha guía sobre el personaje mientras se carga el salto: muestra
+  // la dirección que va a tomar el salto según dónde se está apuntando
+  _drawAimArrow(sy) {
+    const p = this.player;
+    if (!(p.grounded && this.input.charging)) return;
+    const dir = this.input.liveDirection(p.x);
+    const chargeT = this.input.currentCharge();
+    const ax = p.x + dir * 26;
+    const ay = sy - PLAYER_H / 2 - 16 - chargeT * 10;
+    ctx.save();
+    ctx.translate(ax, ay);
+    if (dir !== 0) ctx.rotate((dir * Math.PI) / 2 - Math.PI / 2);
+    ctx.globalAlpha = 0.55 + chargeT * 0.45;
+    ctx.fillStyle = "#ffe28a";
+    const s = 5 + chargeT * 4;
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.lineTo(-s * 0.8, s * 0.6);
+    ctx.lineTo(s * 0.8, s * 0.6);
+    ctx.closePath();
+    ctx.fill();
     ctx.restore();
   }
 
@@ -564,6 +674,16 @@ class Game {
     this.render();
     requestAnimationFrame((t) => this.loop(t));
   }
+}
+
+function drawLimb(originX, originY, len, w, angle, color) {
+  ctx.save();
+  ctx.translate(originX, originY);
+  ctx.rotate(angle);
+  ctx.fillStyle = color;
+  roundRect(ctx, -w / 2, 0, w, len, w / 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 function roundRect(ctx, x, y, w, h, r) {

@@ -194,15 +194,16 @@ const JUMP_VX_MAX = 720;
 const CHARGE_MS_MAX = 550;
 
 const PLAYER_W = 34;
-const PLAYER_H = 46;
+const PLAYER_H = 50;
+const DIR_DEADZONE = 26; // px alrededor del personaje sin dirección definida
 
-const CAMERA_ANCHOR_FRAC = 0.6;
-const CAMERA_SMOOTH = 6;
-const DEATH_MARGIN_PX = 340;
+const CAMERA_ANCHOR_FRAC = 0.6; // el jugador vive al 60% de la altura del canvas
+const CAMERA_SMOOTH = 6; // más alto = cámara más "pegada" al jugador
+const DEATH_MARGIN_PX = 340; // cuánto puede caer por debajo de cámara antes de morir
 
 const WAVE_START_DELAY_S = 3.5;
-const WAVE_BASE_SPEED = 26;
-const WAVE_SPEED_PER_METER = 0.6;
+const WAVE_BASE_SPEED = 26; // px/s
+const WAVE_SPEED_PER_METER = 0.6; // acelera con la altura alcanzada
 const WAVE_MAX_SPEED = 260;
 
 const PLATFORM_H = 16;
@@ -210,6 +211,7 @@ const MOVING_SPEED_RANGE = [60, 140];
 const BREAK_DELAY_S = 0.32;
 const SINK_SPEED = 70;
 
+// Biomas / dificultad por altura (metros)
 const BIOMES = [
   { minAlt: 0, name: "praderas", sky: ["#8fd3ff", "#eaffea"], types: { normal: 1 } },
   { minAlt: 60, name: "nubes", sky: ["#5fb4ff", "#dff3ff"], types: { normal: 0.7, moving: 0.3 } },
@@ -223,6 +225,7 @@ function biomeFor(altitudeM) {
   for (const cand of BIOMES) if (altitudeM >= cand.minAlt) b = cand;
   return b;
 }
+
 function lerpColor(a, b, t) {
   const pa = hexToRgb(a), pb = hexToRgb(b);
   const r = Math.round(pa.r + (pb.r - pa.r) * t);
@@ -235,6 +238,9 @@ function hexToRgb(hex) {
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
+// ---------------------------------------------------------------------
+// Setup canvas
+// ---------------------------------------------------------------------
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 let cw = 0, ch = 0, dpr = 1;
@@ -252,6 +258,11 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 
+// ---------------------------------------------------------------------
+// Semilla: la torre entera depende de esto. Compartir el link con
+// ?seed=XYZ es, en miniatura, lo que hará la sala: todos generan
+// exactamente el mismo patrón de plataformas.
+// ---------------------------------------------------------------------
 function getSeedFromUrl() {
   const params = new URLSearchParams(location.search);
   const s = params.get("seed");
@@ -259,7 +270,8 @@ function getSeedFromUrl() {
   return /^\d+$/.test(s) ? Number(s) >>> 0 : seedFromString(s);
 }
 
-let currentSeedLabel, currentSeedNum;
+let currentSeedLabel;
+let currentSeedNum;
 
 function pickSeed(forceNew) {
   const fromUrl = forceNew ? null : getSeedFromUrl();
@@ -283,9 +295,14 @@ document.getElementById("copy-seed").addEventListener("click", async () => {
     const old = btn.textContent;
     btn.textContent = "copiado!";
     setTimeout(() => (btn.textContent = old), 1200);
-  } catch { /* clipboard no disponible, no pasa nada grave */ }
+  } catch {
+    /* clipboard no disponible, no pasa nada grave */
+  }
 });
 
+// ---------------------------------------------------------------------
+// Generación de plataformas
+// ---------------------------------------------------------------------
 class PlatformGen {
   constructor(seed) {
     this.rng = mulberry32(seed);
@@ -293,6 +310,7 @@ class PlatformGen {
     this.lastAltitudeM = 0;
     this.lastX = null;
   }
+
   reset() {
     this.rng = mulberry32(currentSeedNum);
     this.platforms = [];
@@ -300,69 +318,118 @@ class PlatformGen {
     this.lastX = null;
     this._seedGround();
   }
+
   _seedGround() {
     const groundW = Math.min(220, cw * 0.5);
     const x = cw / 2;
-    this.platforms.push(this._makePlatform(0, x, groundW, "normal"));
+    const p = this._makePlatform(0, x, groundW, "normal");
+    this.platforms.push(p);
     this.lastAltitudeM = 0;
     this.lastX = x;
   }
+
   _makePlatform(altitudeM, x, w, type) {
     return {
-      id: Math.random(), altitudeM, worldY: -altitudeM * PPM, x, w, type,
-      state: "idle", timer: 0,
+      id: Math.random(),
+      altitudeM,
+      worldY: -altitudeM * PPM,
+      x,
+      w,
+      type,
+      state: "idle", // idle | breaking | gone
+      timer: 0,
       moveDir: this.rng() < 0.5 ? -1 : 1,
       moveSpeed: randRange(this.rng, MOVING_SPEED_RANGE[0], MOVING_SPEED_RANGE[1]),
       moveRange: randRange(this.rng, 40, 110),
       baseX: x,
     };
   }
+
   ensureGeneratedTo(altitudeMTarget) {
     while (this.lastAltitudeM < altitudeMTarget) {
       const biome = biomeFor(this.lastAltitudeM);
       const difficulty = Math.min(1, this.lastAltitudeM / 500);
-      const minGap = 1.6 + difficulty * 0.6;
+      const minGap = 1.6 + difficulty * 0.6; // metros
       const maxGap = 3.4 + difficulty * 1.6;
       const gap = randRange(this.rng, minGap, maxGap);
       const altitudeM = this.lastAltitudeM + gap;
+
       const w = randRange(this.rng, 70, 130) - difficulty * 20;
-      const maxDx = 90 + difficulty * 120;
+      const maxDx = 90 + difficulty * 120; // qué tan lejos en X puede aparecer la próxima
       const margin = w / 2 + 12;
       let x = this.lastX + randRange(this.rng, -maxDx, maxDx);
       x = Math.max(margin, Math.min(cw - margin, x));
+
       const type = weightedPick(this.rng, Object.entries(biome.types));
-      this.platforms.push(this._makePlatform(altitudeM, x, Math.max(46, w), type));
+      const p = this._makePlatform(altitudeM, x, Math.max(46, w), type);
+      this.platforms.push(p);
       this.lastAltitudeM = altitudeM;
       this.lastX = x;
     }
   }
+
   cullBelow(worldYLimit) {
-    while (this.platforms.length && this.platforms[0].worldY > worldYLimit) this.platforms.shift();
+    // worldY más grande = más abajo. Sacamos plataformas muy por debajo
+    // del punto visible para no acumular memoria en una torre infinita.
+    while (this.platforms.length && this.platforms[0].worldY > worldYLimit) {
+      this.platforms.shift();
+    }
   }
 }
 
+// ---------------------------------------------------------------------
+// Jugador
+// ---------------------------------------------------------------------
 class Player {
   reset() {
     this.x = cw / 2;
     this.worldY = -PLAYER_H / 2 - PLATFORM_H / 2;
-    this.vx = 0; this.vy = 0;
-    this.grounded = true; this.groundedPlatform = null;
-    this.altitudeM = 0; this.bestAltitudeM = 0;
-    this.squash = 1; this.facing = 1; this.dead = false;
+    this.vx = 0;
+    this.vy = 0;
+    this.grounded = true;
+    this.groundedPlatform = null;
+    this.altitudeM = 0;
+    this.bestAltitudeM = 0;
+    this.squash = 1;
+    this.facing = 1;
+    this.dead = false;
   }
 }
 
+// ---------------------------------------------------------------------
+// Dirección relativa al personaje: tocar cerca de él salta recto, tocar
+// a un lado lo manda para ese lado — sin importar en qué parte de la
+// pantalla esté parado (antes se usaban tercios fijos de la pantalla,
+// lo que hacía que tocar "a la izquierda del personaje" saltara para la
+// derecha si el personaje ya estaba cerca del borde derecho).
+// ---------------------------------------------------------------------
+function resolveDirection(pointerX, keyDir, playerX) {
+  if (keyDir !== 0) return keyDir;
+  if (pointerX === null || pointerX === undefined) return 0;
+  const dx = pointerX - playerX;
+  if (dx > DIR_DEADZONE) return 1;
+  if (dx < -DIR_DEADZONE) return -1;
+  return 0;
+}
+
+// ---------------------------------------------------------------------
+// Input: tap/hold para saltar, dirección por lado tocado (relativo al
+// personaje, con "apuntado" continuo mientras se arrastra) o flechas
+// ---------------------------------------------------------------------
 class InputController {
   constructor() {
     this.charging = false;
     this.chargeStart = 0;
-    this.direction = 0;
+    this.pointerX = null; // última posición del puntero mientras carga
     this.keyDir = 0;
-    this.jumpRequested = null;
+    this.jumpRequested = null; // {charge, pointerX, keyDir} cuando se suelta
 
     canvas.addEventListener("pointerdown", (e) => this._down(e.clientX));
-    canvas.addEventListener("pointerup", () => this._up());
-    canvas.addEventListener("pointercancel", () => this._up());
+    canvas.addEventListener("pointermove", (e) => {
+      if (this.charging) this.pointerX = e.clientX;
+    });
+    canvas.addEventListener("pointerup", (e) => this._up(e.clientX));
+    canvas.addEventListener("pointercancel", () => this._up(null));
 
     window.addEventListener("keydown", (e) => {
       if (e.code === "ArrowLeft") this.keyDir = -1;
@@ -372,35 +439,37 @@ class InputController {
     window.addEventListener("keyup", (e) => {
       if (e.code === "ArrowLeft" && this.keyDir === -1) this.keyDir = 0;
       else if (e.code === "ArrowRight" && this.keyDir === 1) this.keyDir = 0;
-      else if (e.code === "Space") this._up();
+      else if (e.code === "Space") this._up(null);
     });
   }
+
   _down(clientX) {
     if (this.charging) return;
     this.charging = true;
     this.chargeStart = performance.now();
-    if (clientX === null) {
-      this.direction = this.keyDir;
-    } else {
-      const third = cw / 3;
-      if (clientX < third) this.direction = -1;
-      else if (clientX > third * 2) this.direction = 1;
-      else this.direction = 0;
-    }
+    this.pointerX = clientX; // null cuando el salto arranca por teclado
   }
-  _up() {
+
+  _up(clientX) {
     if (!this.charging) return;
     this.charging = false;
+    if (clientX !== null && clientX !== undefined) this.pointerX = clientX;
     const heldMs = performance.now() - this.chargeStart;
     const charge = Math.max(0, Math.min(1, heldMs / CHARGE_MS_MAX));
-    const dir = this.keyDir !== 0 ? this.keyDir : this.direction;
-    this.jumpRequested = { charge, direction: dir };
+    this.jumpRequested = { charge, pointerX: this.pointerX, keyDir: this.keyDir };
   }
+
   currentCharge() {
     if (!this.charging) return 0;
     const heldMs = performance.now() - this.chargeStart;
     return Math.max(0, Math.min(1, heldMs / CHARGE_MS_MAX));
   }
+
+  // dirección de apuntado en vivo, para dibujar la flecha guía mientras se carga
+  liveDirection(playerX) {
+    return resolveDirection(this.pointerX, this.keyDir, playerX);
+  }
+
   consumeJump() {
     const j = this.jumpRequested;
     this.jumpRequested = null;
@@ -408,6 +477,9 @@ class InputController {
   }
 }
 
+// ---------------------------------------------------------------------
+// Juego
+// ---------------------------------------------------------------------
 class Game {
   constructor() {
     this.gen = new PlatformGen(0);
@@ -418,13 +490,14 @@ class Game {
     this.elapsed = 0;
     this.running = false;
     this.lastTime = performance.now();
+    this.notices = []; // notificaciones tipo "X llegó a Ym" (placeholder multijugador)
 
     document.getElementById("start-btn").addEventListener("click", () => this.start(false));
     document.getElementById("retry-btn").addEventListener("click", () => this.start(false));
     document.getElementById("new-seed-btn").addEventListener("click", () => this.start(true));
 
     this.bestKey = "subida_infinita_best_altitude";
-    this.player.reset();
+    this.player.reset(); // asegura campos válidos para el render previo a "Jugar"
     requestAnimationFrame((t) => this.loop(t));
   }
 
@@ -456,19 +529,25 @@ class Game {
   update(dt) {
     if (!this.running) return;
     this.elapsed += dt;
+
     const p = this.player;
     const gen = this.gen;
 
+    // -- salto --
     const jump = this.input.consumeJump();
     if (jump && p.grounded) {
+      const direction = resolveDirection(jump.pointerX, jump.keyDir, p.x);
       const vy = JUMP_VY_MIN + jump.charge * (JUMP_VY_MAX - JUMP_VY_MIN);
-      const vx = jump.direction * (JUMP_VX_MIN + jump.charge * (JUMP_VX_MAX - JUMP_VX_MIN));
-      p.vy = -vy; p.vx = vx;
-      p.grounded = false; p.groundedPlatform = null;
+      const vx = direction * (JUMP_VX_MIN + jump.charge * (JUMP_VX_MAX - JUMP_VX_MIN));
+      p.vy = -vy;
+      p.vx = vx;
+      p.grounded = false;
+      p.groundedPlatform = null;
       p.squash = 1.35;
-      if (jump.direction !== 0) p.facing = jump.direction;
+      if (direction !== 0) p.facing = direction;
     }
 
+    // -- física --
     if (!p.grounded) {
       p.vy += GRAVITY * dt;
       p.worldY += p.vy * dt;
@@ -476,20 +555,32 @@ class Game {
       p.x = Math.max(PLAYER_W / 2, Math.min(cw - PLAYER_W / 2, p.x));
     } else if (p.groundedPlatform) {
       const gp = p.groundedPlatform;
-      if (gp.state === "gone") { p.grounded = false; p.groundedPlatform = null; }
-      else {
+      if (gp.state === "gone") {
+        p.grounded = false;
+        p.groundedPlatform = null;
+      } else {
         p.x += (gp.x - gp.prevX || 0);
         p.worldY = gp.worldY - PLAYER_H / 2 - PLATFORM_H / 2;
       }
     }
 
-    p.squash += (1 - p.squash) * Math.min(1, dt * 10);
+    // squash-and-stretch: se agacha mientras carga (más cuanto más carga
+    // acumula), se estira al saltar/caer, y siempre relaja hacia 1
+    if (p.grounded && this.input.charging) {
+      const targetSquash = 1 - this.input.currentCharge() * 0.3;
+      p.squash += (targetSquash - p.squash) * Math.min(1, dt * 14);
+    } else {
+      p.squash += (1 - p.squash) * Math.min(1, dt * 10);
+    }
 
+    // -- altitud --
     p.altitudeM = Math.max(p.altitudeM, -p.worldY / PPM);
     if (p.altitudeM > p.bestAltitudeM) p.bestAltitudeM = p.altitudeM;
 
+    // -- generar/limpiar plataformas --
     gen.ensureGeneratedTo(p.altitudeM + ch / PPM + 6);
 
+    // -- actualizar plataformas (movimiento, rotura, hundimiento) --
     for (const plat of gen.platforms) {
       plat.prevX = plat.x;
       if (plat.state === "gone") continue;
@@ -507,6 +598,7 @@ class Game {
       }
     }
 
+    // -- colisiones (solo cuando cae) --
     if (!p.grounded && p.vy > 0) {
       for (const plat of gen.platforms) {
         if (plat.state === "gone") continue;
@@ -515,10 +607,15 @@ class Game {
         const feetNow = p.worldY + PLAYER_H / 2;
         const withinX = Math.abs(p.x - plat.x) < plat.w / 2 + PLAYER_W / 2 - 4;
         if (withinX && feetPrev <= platTop && feetNow >= platTop) {
-          if (plat.type === "spikes") { this.gameOver(); return; }
+          if (plat.type === "spikes") {
+            this.gameOver();
+            return;
+          }
           p.worldY = plat.worldY - PLAYER_H / 2 - PLATFORM_H / 2;
-          p.vy = 0; p.vx = 0;
-          p.grounded = true; p.groundedPlatform = plat;
+          p.vy = 0;
+          p.vx = 0;
+          p.grounded = true;
+          p.groundedPlatform = plat;
           p.squash = 0.72;
           if (plat.type === "breakable" && plat.state === "idle") plat.state = "breaking";
           if (plat.type === "sinking" && plat.state === "idle") plat.state = "sinking";
@@ -527,20 +624,29 @@ class Game {
       }
     }
 
+    // -- cámara (solo sube) --
     const desiredTop = p.worldY - ch * CAMERA_ANCHOR_FRAC;
     if (desiredTop < this.cameraTopWorldY) {
       this.cameraTopWorldY += (desiredTop - this.cameraTopWorldY) * Math.min(1, dt * CAMERA_SMOOTH);
     }
 
+    // -- ola --
     if (this.elapsed > WAVE_START_DELAY_S) {
       const speed = Math.min(WAVE_MAX_SPEED, WAVE_BASE_SPEED + p.bestAltitudeM * WAVE_SPEED_PER_METER);
       this.waveWorldY -= speed * dt;
     }
     gen.cullBelow(this.waveWorldY + 400);
 
+    // -- condiciones de muerte --
     const screenBottomWorldY = this.cameraTopWorldY + ch;
-    if (p.worldY > screenBottomWorldY + DEATH_MARGIN_PX) { this.gameOver(); return; }
-    if (p.worldY >= this.waveWorldY) { this.gameOver(); return; }
+    if (p.worldY > screenBottomWorldY + DEATH_MARGIN_PX) {
+      this.gameOver();
+      return;
+    }
+    if (p.worldY >= this.waveWorldY) {
+      this.gameOver();
+      return;
+    }
   }
 
   render() {
@@ -563,6 +669,7 @@ class Game {
 
     const toScreenY = (worldY) => worldY - this.cameraTopWorldY;
 
+    // plataformas
     for (const plat of this.gen.platforms) {
       if (plat.state === "gone") continue;
       const sy = toScreenY(plat.worldY);
@@ -570,8 +677,11 @@ class Game {
       this._drawPlatform(plat, sy);
     }
 
+    // jugador
     this._drawPlayer(toScreenY(p.worldY));
+    this._drawAimArrow(toScreenY(p.worldY));
 
+    // ola
     const waveSy = toScreenY(this.waveWorldY);
     if (waveSy < ch) {
       const waveGrad = ctx.createLinearGradient(0, Math.max(0, waveSy), 0, ch);
@@ -583,6 +693,7 @@ class Game {
       ctx.fillRect(0, Math.max(0, waveSy) - 3, cw, 3);
     }
 
+    // HUD dinámico
     document.getElementById("alt-current").textContent = Math.floor(p.altitudeM) + "";
     document.getElementById("alt-best").textContent = "mejor: " + Math.floor(p.bestAltitudeM) + "m";
     document.getElementById("charge-bar").style.width = this.input.currentCharge() * 100 + "%";
@@ -620,32 +731,120 @@ class Game {
 
   _drawPlayer(sy) {
     const p = this.player;
+    const inAir = !p.grounded;
+    const charging = p.grounded && this.input.charging;
+    const chargeT = charging ? this.input.currentCharge() : 0;
+
     ctx.save();
     ctx.translate(p.x, sy);
-    const sx = 1 / p.squash;
-    const syScale = p.squash;
-    ctx.scale(sx, syScale);
+    ctx.scale(1 / p.squash, p.squash);
 
-    ctx.fillStyle = "#ffd166";
-    roundRect(ctx, -PLAYER_W / 2, -PLAYER_H / 2, PLAYER_W, PLAYER_H, 10);
+    // -- geometría del muñequito, pies apoyados en PLAYER_H/2 --
+    const feetY = PLAYER_H / 2;
+    const legW = 8, legH = 9;
+    const legY = feetY - legH;
+    const bodyW = 26, bodyH = 22;
+    const bodyBottomY = legY;
+    const bodyTopY = bodyBottomY - bodyH;
+    const headR = 11;
+    const headCenterY = bodyTopY - headR * 0.75;
+
+    const skin = "#ffb238";
+    const skinDark = "#e0932a";
+    const ink = "#2b2118";
+
+    // piernas: se separan un poco en el aire, se tensan al cargar
+    const legSpread = inAir ? 8.5 : charging ? 5 + chargeT * 1.5 : 6;
+    ctx.fillStyle = skinDark;
+    roundRect(ctx, -legSpread - legW / 2, legY, legW, legH, 4);
+    ctx.fill();
+    roundRect(ctx, legSpread - legW / 2, legY, legW, legH, 4);
     ctx.fill();
 
-    const inAir = !p.grounded;
-    ctx.fillStyle = "#2b2b2b";
-    const eyeY = -PLAYER_H / 2 + 16;
-    const eyeDx = p.facing * 2;
-    ctx.beginPath();
-    ctx.ellipse(-7 + eyeDx, eyeY, inAir ? 2.6 : 3.2, inAir ? 3.6 : 3.2, 0, 0, Math.PI * 2);
-    ctx.ellipse(7 + eyeDx, eyeY, inAir ? 2.6 : 3.2, inAir ? 3.6 : 3.2, 0, 0, Math.PI * 2);
+    // brazos: relajados de pie, hacia atrás al cargar (envión), arriba en el aire
+    const armLen = 15, armW = 6.5;
+    const armOriginY = bodyTopY + 6;
+    let armAngle;
+    if (inAir) armAngle = -2.35;
+    else if (charging) armAngle = 0.55 + chargeT * 0.5;
+    else armAngle = 0.3;
+    drawLimb(-bodyW / 2, armOriginY, armLen, armW, -armAngle, skin);
+    drawLimb(bodyW / 2, armOriginY, armLen, armW, armAngle, skin);
+
+    // cuerpo con panza clara
+    ctx.fillStyle = skin;
+    roundRect(ctx, -bodyW / 2, bodyTopY, bodyW, bodyH, 10);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,241,214,0.55)";
+    roundRect(ctx, -bodyW / 2 + 5, bodyTopY + bodyH * 0.32, bodyW - 10, bodyH * 0.55, 7);
     ctx.fill();
 
-    ctx.strokeStyle = "#2b2b2b";
-    ctx.lineWidth = 2;
+    // cabeza
+    ctx.fillStyle = "#fff1d6";
     ctx.beginPath();
-    if (inAir) ctx.arc(0, eyeY + 12, 4, Math.PI * 0.15, Math.PI * 0.85);
-    else { ctx.moveTo(-5, eyeY + 12); ctx.lineTo(5, eyeY + 12); }
+    ctx.arc(0, headCenterY, headR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // mechón de pelo
+    ctx.fillStyle = skin;
+    ctx.beginPath();
+    ctx.moveTo(-2, headCenterY - headR + 3);
+    ctx.quadraticCurveTo(3, headCenterY - headR - 8, 8, headCenterY - headR - 1);
+    ctx.quadraticCurveTo(3, headCenterY - headR + 4, -2, headCenterY - headR + 3);
+    ctx.fill();
+
+    // mejillas
+    ctx.fillStyle = "rgba(255,120,100,0.5)";
+    ctx.beginPath();
+    ctx.ellipse(-headR * 0.65, headCenterY + 3, 2.6, 1.8, 0, 0, Math.PI * 2);
+    ctx.ellipse(headR * 0.65, headCenterY + 3, 2.6, 1.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ojos: se entrecierran al cargar (esfuerzo), se agrandan en el aire
+    const eyeDx = p.facing * 1.6;
+    const eyeY = headCenterY - 1;
+    const eyeRX = inAir ? 2.3 : 2.6;
+    const eyeRY = inAir ? 3.2 : charging ? 1.4 : 2.6;
+    ctx.fillStyle = ink;
+    ctx.beginPath();
+    ctx.ellipse(-5.5 + eyeDx, eyeY, eyeRX, eyeRY, 0, 0, Math.PI * 2);
+    ctx.ellipse(5.5 + eyeDx, eyeY, eyeRX, eyeRY, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // boca: esfuerzo tenso al cargar, "O" de impulso en el aire, sonrisa parada
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    if (inAir) ctx.arc(0, eyeY + 7, 3, Math.PI * 0.1, Math.PI * 0.9);
+    else if (charging) { ctx.moveTo(-3.5, eyeY + 7); ctx.lineTo(3.5, eyeY + 7); }
+    else ctx.arc(0, eyeY + 5, 2.6, Math.PI * 0.15, Math.PI * 0.85);
     ctx.stroke();
 
+    ctx.restore();
+  }
+
+  // flecha guía sobre el personaje mientras se carga el salto: muestra
+  // la dirección que va a tomar el salto según dónde se está apuntando
+  _drawAimArrow(sy) {
+    const p = this.player;
+    if (!(p.grounded && this.input.charging)) return;
+    const dir = this.input.liveDirection(p.x);
+    const chargeT = this.input.currentCharge();
+    const ax = p.x + dir * 26;
+    const ay = sy - PLAYER_H / 2 - 16 - chargeT * 10;
+    ctx.save();
+    ctx.translate(ax, ay);
+    if (dir !== 0) ctx.rotate((dir * Math.PI) / 2 - Math.PI / 2);
+    ctx.globalAlpha = 0.55 + chargeT * 0.45;
+    ctx.fillStyle = "#ffe28a";
+    const s = 5 + chargeT * 4;
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.lineTo(-s * 0.8, s * 0.6);
+    ctx.lineTo(s * 0.8, s * 0.6);
+    ctx.closePath();
+    ctx.fill();
     ctx.restore();
   }
 
@@ -656,6 +855,16 @@ class Game {
     this.render();
     requestAnimationFrame((t) => this.loop(t));
   }
+}
+
+function drawLimb(originX, originY, len, w, angle, color) {
+  ctx.save();
+  ctx.translate(originX, originY);
+  ctx.rotate(angle);
+  ctx.fillStyle = color;
+  roundRect(ctx, -w / 2, 0, w, len, w / 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 function roundRect(ctx, x, y, w, h, r) {
